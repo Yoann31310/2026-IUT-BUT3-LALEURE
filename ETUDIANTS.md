@@ -28,7 +28,7 @@
 ## 3. Rendu
 
 - **TD :** TD2
-- **Lien de la PR :** (à coller une fois la PR ouverte)
+- **Lien de la PR :** https://github.com/IUT-BUT3-2026/revues-de-code/pull/15
 
 ## 4. Note — réservée à l'enseignant
 
