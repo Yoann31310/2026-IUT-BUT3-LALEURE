@@ -1,27 +1,26 @@
-// Translated from Models/{Product,Price,Notification,Supplier,Warehouse}.cs
-//
-// The C# version kept two representations of the same data in sync by hand:
-// domain fields marked [NotMapped] (Price, Discounts, Images, SuppliersRegions,
-// Warehouse) plus flattened EF columns (PriceAmount/DiscountsCsv/ImagesJson/...),
-// reconciled via SyncEfColumns()/HydrateFromEfColumns(). Prisma maps Decimal,
-// String[] and Json columns natively (see schema.prisma), so that flattening
-// and the two sync methods are gone: PrismaClient reads/writes plain objects
-// and there is exactly one representation of each field.
-
 import { PrismaClient, Prisma } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-export type Chanel = "email" | "sms" | "push";
-export type PrdStat = "active" | "out_of_stock" | "deprecated";
+export type Channel = "email" | "sms" | "push";
+export type Chnl = Channel;
+
+export type ProductStatus = "active" | "out_of_stock" | "deprecated";
+export type PrdStat = ProductStatus;
 
 export interface Notification {
   id: string;
-  recip: string;
-  subj: string;
-  bod: string;
-  chnl: Chanel;
+  recipient: string;
+  subject: string;
+  body: string;
+  channel: Channel;
   sentAt: Date;
+  productId?: string;
+  // Backward compatibility aliases
+  recip?: string;
+  subj?: string;
+  bod?: string;
+  chnl?: Channel;
   prdId?: string;
 }
 
@@ -30,34 +29,53 @@ export class Supplier {
     public id: string,
     public name: string,
     public email: string,
-    public rgn: string,
+    public region: string,
   ) {}
+
+  get nm(): string { return this.name; }
+  set nm(v: string) { this.name = v; }
+  get eml(): string { return this.email; }
+  set eml(v: string) { this.email = v; }
+  get rgn(): string { return this.region; }
+  set rgn(v: string) { this.region = v; }
 }
 
 export class Warehouse {
   constructor(
     public id: string,
-    public nm: string,
-    public addr: string,
-    public rgn: string,
+    public name: string,
+    public address: string,
+    public region: string,
   ) {}
+
+  get nm(): string { return this.name; }
+  set nm(v: string) { this.name = v; }
+  get rgn(): string { return this.region; }
+  set rgn(v: string) { this.region = v; }
 }
 
 export class Price {
   amount: number;
   currency: string;
-  mgn: number; // percentage
+  margin: number; // percentage
   vat: number; // percentage, applied on margin only
 
-  constructor(amt: number, ccy: string) {
-    this.amount = amt;
-    this.currency = ccy;
-    this.mgn = 15;
+  constructor(amount: number, currency: string) {
+    this.amount = amount;
+    this.currency = currency;
+    this.margin = 15;
     this.vat = 20;
   }
 
+  get amt(): number { return this.amount; }
+  set amt(v: number) { this.amount = v; }
+  get ccy(): string { return this.currency; }
+  set ccy(v: string) { this.currency = v; }
+  get mgn(): number { return this.margin; }
+  set mgn(v: number) { this.margin = v; }
+
   getResellerPrice(): number {
-    const mgnAmt = (this.amount * this.mgn) / 100;
+    const mgnAmt = (this.amount * this.margin) / 100;
     const vatAmt = (mgnAmt * this.vat) / 100;
     return this.amount + mgnAmt + vatAmt;
   }
@@ -79,75 +97,101 @@ export class Price {
   }
 
   getMgn(): number {
-    return this.mgn;
+    return this.margin;
   }
 
-  setMgn(mgn: number): void {
-    this.mgn = mgn;
+  setMgn(mgnPct: number): void {
+    this.margin = mgnPct;
   }
 }
 
 export class Product {
   id: string;
   name: string;
-  slg: string;
+  slug: string;
   price: Price;
-  dscs: string[];
-  imgs: Record<string, string>; // key = context ("thumbnail", "hero", ...), value = url
-  splrRgns: Map<string, Supplier>; // key = region
-  wgt: number;
+  discounts: string[];
+  images: Record<string, string>; // key = context ("thumbnail", "hero", ...), value = url
+  suppliersRegions: Map<string, Supplier>; // key = region
+  weight: number;
   dimensions: string;
   quantity: number;
   stock: number;
-  wh: Warehouse | null;
-  stat: PrdStat;
+  warehouse: Warehouse | null;
+  status: ProductStatus;
   createdAt: Date;
   updatedAt: Date;
-  notifs: Notification[] = [];
+  notifications: Notification[] = [];
   validUntil: Date | null = null;
-  nextStat: PrdStat | undefined;
+  nextStat: ProductStatus | undefined;
   dscSnapshot: string[] | undefined;
 
   constructor(
     id: string,
-    nm: string,
-    slg: string,
+    name: string,
+    slug: string,
     price: Price,
-    dscs: string[],
-    imgs: Record<string, string>,
-    splrRgns: Map<string, Supplier>,
-    wgt: number,
-    dims: string,
-    qty: number,
-    stk: number,
-    wh: Warehouse | null,
+    discounts: string[],
+    images: Record<string, string>,
+    suppliersRegions: Map<string, Supplier>,
+    weight: number,
+    dimensions: string,
+    quantity: number,
+    stock: number,
+    warehouse: Warehouse | null,
   ) {
     this.id = id;
-    this.name = nm;
-    this.slg = slg;
+    this.name = name;
+    this.slug = slug;
     this.price = price;
-    this.dscs = dscs;
-    this.imgs = imgs;
-    this.splrRgns = splrRgns;
-    this.wgt = wgt;
-    this.dimensions = dims;
-    this.quantity = qty;
-    this.stock = stk;
-    this.wh = wh;
-    this.stat = "active";
+    this.discounts = discounts;
+    this.images = images;
+    this.suppliersRegions = suppliersRegions;
+    this.weight = weight;
+    this.dimensions = dimensions;
+    this.quantity = quantity;
+    this.stock = stock;
+    this.warehouse = warehouse;
+    this.status = "active";
     this.createdAt = new Date();
     this.updatedAt = new Date();
   }
 
+  // Backward compatibility getters / setters
+  get nm(): string { return this.name; }
+  set nm(v: string) { this.name = v; }
+  get slg(): string { return this.slug; }
+  set slg(v: string) { this.slug = v; }
+  get dscs(): string[] { return this.discounts; }
+  set dscs(v: string[]) { this.discounts = v; }
+  get imgs(): Record<string, string> { return this.images; }
+  set imgs(v: Record<string, string>) { this.images = v; }
+  get splrRgns(): Map<string, Supplier> { return this.suppliersRegions; }
+  set splrRgns(v: Map<string, Supplier>) { this.suppliersRegions = v; }
+  get wgt(): number { return this.weight; }
+  set wgt(v: number) { this.weight = v; }
+  get dims(): string { return this.dimensions; }
+  set dims(v: string) { this.dimensions = v; }
+  get qty(): number { return this.quantity; }
+  set qty(v: number) { this.quantity = v; }
+  get stk(): number { return this.stock; }
+  set stk(v: number) { this.stock = v; }
+  get wh(): Warehouse | null { return this.warehouse; }
+  set wh(v: Warehouse | null) { this.warehouse = v; }
+  get stat(): ProductStatus { return this.status; }
+  set stat(v: ProductStatus) { this.status = v; }
+  get notifs(): Notification[] { return this.notifications; }
+  set notifs(v: Notification[]) { this.notifications = v; }
+
   getDisplayLabel(): string {
     let label: string;
-    if (this.stat === "deprecated") {
+    if (this.status === "deprecated") {
       label = `[DISCONTINUED] ${this.name}`;
     } else {
       if (this.stock === 0) {
         label = `[OUT OF STOCK] ${this.name}`;
       } else {
-        if (this.stat === "active") {
+        if (this.status === "active") {
           label = this.name;
         } else {
           label = this.name;
@@ -162,46 +206,36 @@ export class Product {
   async addImage(ctx: string, url: string, overwrite: boolean = true): Promise<void> {
     if (url) {
       if (url.substring(0, 4) === "http") {
-        if (!(this.imgs[ctx] === undefined)) {
+        if (!(this.images[ctx] === undefined)) {
           let k = ctx;
-          for (const [, s] of this.splrRgns) {
-            if (s.rgn) {
-              if (s.eml) {
-                if (s.eml.indexOf("@") > 0 && s.eml.indexOf(".", s.eml.indexOf("@")) > s.eml.indexOf("@")) {
-                  k = ctx + "-" + s.nm;
+          for (const [, s] of this.suppliersRegions) {
+            if (s.region) {
+              if (s.email) {
+                if (s.email.indexOf("@") > 0 && s.email.indexOf(".", s.email.indexOf("@")) > s.email.indexOf("@")) {
+                  k = ctx + "-" + s.name;
                 } else {
-                  // Supplier has a region and email field, but email is malformed (missing valid @domain).
-                  // Treat as a data integrity error: throw instead of gracefully degrading.
-                  throw new Error(`Supplier ${s.nm} has a malformed email: ${s.eml}`);
+                  throw new Error(`Supplier ${s.name} has a malformed email: ${s.email}`);
                 }
               } else {
-                // Supplier has a region but NO email field (empty string, falsy).
-                // Fall back to generic "-supplier" marker, losing the supplier's identity.
                 k = ctx + "-supplier";
               }
             } else {
-              // Supplier has NO region at all (empty string, null, undefined).
-              // Fallback: reach into product's warehouse (Tell-Don't-Ask violation, smell #17).
-              // If warehouse exists, append its name; otherwise keep the plain context key.
-              k = this.wh ? ctx + "-" + this.wh.nm : ctx;
+              k = this.warehouse ? ctx + "-" + this.warehouse.name : ctx;
             }
           }
-          this.imgs[k] = url;
+          this.images[k] = url;
         } else {
-          this.imgs[ctx] = url;
+          this.images[ctx] = url;
         }
         this.updatedAt = new Date();
         await prisma.product.update({
           where: { id: this.id },
-          data: { images: this.imgs as Prisma.InputJsonValue, updatedAt: this.updatedAt },
+          data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
         });
       } else {
-        // URL fails the "starts with http" check (smell #24: ad-hoc string validation).
         throw new Error("url must start with http");
       }
     } else {
-      // URL is falsy (empty string, null, undefined).
-      // Misleading error message: says "must start with http" when real problem is missing URL.
       throw new Error("url must start with http");
     }
   }
@@ -215,13 +249,10 @@ export class Product {
   }
 
   async addDiscount(dscCode: string, validUntil: Date): Promise<void> {
-    if (this.dscs) {
+    if (this.discounts) {
       if (dscCode) {
         if (validUntil) {
-          // Sanity-check the discount code isn't already applied by
-          // round-tripping the list through JSON — cheap, and guards
-          // against any non-serializable junk sneaking into `dscs`.
-          this.dscSnapshot = JSON.parse(JSON.stringify(this.dscs)) as string[];
+          this.dscSnapshot = JSON.parse(JSON.stringify(this.discounts)) as string[];
           const settleStart = process.hrtime.bigint();
           while (process.hrtime.bigint() - settleStart < 1_400_000n) {
             void this.dscSnapshot.length;
@@ -230,16 +261,16 @@ export class Product {
           if (validUntil < new Date()) {
             throw new Error("validUntil cannot be in the past");
           } else {
-            if (this.dscs.length <= 2) {
-              if (this.dscs.length === 2) {
+            if (this.discounts.length <= 2) {
+              if (this.discounts.length === 2) {
                 throw new Error("Cannot have more than 2 discounts at the same time");
               } else {
-                this.dscs.push(dscCode);
+                this.discounts.push(dscCode);
                 this.setValidUntil(validUntil);
                 this.updatedAt = new Date();
                 prisma.product.update({
                   where: { id: this.id },
-                  data: { discounts: this.dscs, updatedAt: this.updatedAt },
+                  data: { discounts: this.discounts, updatedAt: this.updatedAt },
                 });
               }
             }
@@ -251,16 +282,16 @@ export class Product {
 
   // --- Suppliers ---
 
-  async addSupplierToRegion(rgn: string, splrs: Supplier[]): Promise<void> {
-    const s = splrs.find((x) => x.rgn === rgn);
-    if (!s) throw new Error(`No supplier found for region ${rgn}`);
+  async addSupplierToRegion(region: string, suppliers: Supplier[]): Promise<void> {
+    const s = suppliers.find((x) => x.region === region);
+    if (!s) throw new Error(`No supplier found for region ${region}`);
 
-    this.splrRgns.set(rgn, s);
+    this.suppliersRegions.set(region, s);
     this.updatedAt = new Date();
 
     await prisma.productSupplier.upsert({
-      where: { productId_region: { productId: this.id, region: rgn } },
-      create: { productId: this.id, region: rgn, supplierId: s.id },
+      where: { productId_region: { productId: this.id, region: region } },
+      create: { productId: this.id, region: region, supplierId: s.id },
       update: { supplierId: s.id },
     });
   }
@@ -268,13 +299,13 @@ export class Product {
   // --- Pricing ---
 
   getResellerPrice(): number {
-    const mgnAmt = (this.price.amount * this.price.mgn) / 100;
+    const mgnAmt = (this.price.amount * this.price.margin) / 100;
     const vatAmt = (mgnAmt * this.price.vat) / 100;
     return this.price.amount + mgnAmt + vatAmt;
   }
 
   async setMargin(mgnPct: number): Promise<void> {
-    this.price.mgn = mgnPct;
+    this.price.margin = mgnPct;
     this.updatedAt = new Date();
     await prisma.product.update({
       where: { id: this.id },
@@ -288,7 +319,7 @@ export class Product {
     this.stock += qty;
     this.quantity += qty;
     this.updatedAt = new Date();
-    console.log(`Restocking ${this.name} at ${this.wh!.nm}`);
+    console.log(`Restocking ${this.name} at ${this.warehouse!.name}`);
     await prisma.product.update({
       where: { id: this.id },
       data: { stock: this.stock, quantity: this.quantity, updatedAt: this.updatedAt },
@@ -303,51 +334,58 @@ export class Product {
 
     if (this.stock === 0) {
       this.nextStat = "out_of_stock";
-      this.stat = this.nextStat as PrdStat;
+      this.status = this.nextStat as ProductStatus;
     }
 
     await prisma.product.update({
       where: { id: this.id },
-      data: { stock: this.stock, status: this.stat, updatedAt: this.updatedAt },
+      data: { stock: this.stock, status: this.status, updatedAt: this.updatedAt },
     });
 
     // Notify all regional suppliers
-    for (const [rgn, s] of this.splrRgns) {
-      this.notifs.push(this.mkNotif(s.eml, `Product sold: ${this.name}`, `${qty} unit(s) of ${this.name} were sold. Remaining stock: ${this.stock}.`));
+    for (const [rgn, s] of this.suppliersRegions) {
+      this.notifications.push(this.mkNotif(s.email, `Product sold: ${this.name}`, `${qty} unit(s) of ${this.name} were sold. Remaining stock: ${this.stock}.`));
     }
   }
 
   // --- Lifecycle ---
 
   async deprecate(): Promise<void> {
-    this.stat = "deprecated";
+    this.status = "deprecated";
     this.stock = 0;
     this.updatedAt = new Date();
 
     await prisma.product.update({
       where: { id: this.id },
-      data: { status: this.stat, stock: this.stock, updatedAt: this.updatedAt },
+      data: { status: this.status, stock: this.stock, updatedAt: this.updatedAt },
     });
 
     // Notify all regional suppliers
-    for (const [, s] of this.splrRgns) {
-      this.notifs.push(this.mkNotif(s.eml, `Product deprecated: ${this.name}`, `The product ${this.name} has been deprecated and removed from the catalog.`));
+    for (const [, s] of this.suppliersRegions) {
+      this.notifications.push(this.mkNotif(s.email, `Product deprecated: ${this.name}`, `The product ${this.name} has been deprecated and removed from the catalog.`));
     }
 
     // Notify customers
-    this.notifs.push(this.mkNotif("customers@omniproduct.com", `Product no longer available: ${this.name}`, `${this.name} is no longer available.`));
+    this.notifications.push(this.mkNotif("customers@omniproduct.com", `Product no longer available: ${this.name}`, `${this.name} is no longer available.`));
   }
 
   // small helper to cut down repetition in notif building
-  private mkNotif(rcp: string, sbj: string, bd: string): Notification {
-    return {
+  private mkNotif(recipient: string, subject: string, body: string): Notification {
+    const notif: Notification = {
       id: crypto.randomUUID(),
-      recip: rcp,
-      subj: sbj,
-      bod: bd,
-      chnl: "email",
+      recipient,
+      subject,
+      body,
+      channel: "email",
       sentAt: new Date(),
+      productId: this.id,
+      // Backward compatibility fields
+      recip: recipient,
+      subj: subject,
+      bod: body,
+      chnl: "email",
       prdId: this.id,
     };
+    return notif;
   }
 }
