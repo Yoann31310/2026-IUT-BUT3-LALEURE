@@ -147,3 +147,4 @@ de revue de la PR.)
 La note de chaque membre est reportée dans `ETUDIANTS.md` (section Note).
 
 Les énoncés de chaque TD vivent sur leur branche (`td1/README.md`, `td2/…`).
+
