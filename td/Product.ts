@@ -12,7 +12,7 @@ import { PrismaClient, Prisma } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-export type Chnl = "email" | "sms" | "push";
+export type Chanel = "email" | "sms" | "push";
 export type PrdStat = "active" | "out_of_stock" | "deprecated";
 
 export interface Notification {
@@ -20,7 +20,7 @@ export interface Notification {
   recip: string;
   subj: string;
   bod: string;
-  chnl: Chnl;
+  chnl: Chanel;
   sentAt: Date;
   prdId?: string;
 }
@@ -28,8 +28,8 @@ export interface Notification {
 export class Supplier {
   constructor(
     public id: string,
-    public nm: string,
-    public eml: string,
+    public name: string,
+    public email: string,
     public rgn: string,
   ) {}
 }
@@ -44,38 +44,38 @@ export class Warehouse {
 }
 
 export class Price {
-  amt: number;
-  ccy: string;
+  amount: number;
+  currency: string;
   mgn: number; // percentage
   vat: number; // percentage, applied on margin only
 
   constructor(amt: number, ccy: string) {
-    this.amt = amt;
-    this.ccy = ccy;
+    this.amount = amt;
+    this.currency = ccy;
     this.mgn = 15;
     this.vat = 20;
   }
 
   getResellerPrice(): number {
-    const mgnAmt = (this.amt * this.mgn) / 100;
+    const mgnAmt = (this.amount * this.mgn) / 100;
     const vatAmt = (mgnAmt * this.vat) / 100;
-    return this.amt + mgnAmt + vatAmt;
+    return this.amount + mgnAmt + vatAmt;
   }
 
   getAmt(): number {
-    return this.amt;
+    return this.amount;
   }
 
   setAmt(amt: number): void {
-    this.amt = amt;
+    this.amount = amt;
   }
 
   getCcy(): string {
-    return this.ccy;
+    return this.currency;
   }
 
   setCcy(ccy: string): void {
-    this.ccy = ccy;
+    this.currency = ccy;
   }
 
   getMgn(): number {
@@ -89,16 +89,16 @@ export class Price {
 
 export class Product {
   id: string;
-  nm: string;
+  name: string;
   slg: string;
   price: Price;
   dscs: string[];
   imgs: Record<string, string>; // key = context ("thumbnail", "hero", ...), value = url
   splrRgns: Map<string, Supplier>; // key = region
   wgt: number;
-  dims: string;
-  qty: number;
-  stk: number;
+  dimensions: string;
+  quantity: number;
+  stock: number;
   wh: Warehouse | null;
   stat: PrdStat;
   createdAt: Date;
@@ -123,16 +123,16 @@ export class Product {
     wh: Warehouse | null,
   ) {
     this.id = id;
-    this.nm = nm;
+    this.name = nm;
     this.slg = slg;
     this.price = price;
     this.dscs = dscs;
     this.imgs = imgs;
     this.splrRgns = splrRgns;
     this.wgt = wgt;
-    this.dims = dims;
-    this.qty = qty;
-    this.stk = stk;
+    this.dimensions = dims;
+    this.quantity = qty;
+    this.stock = stk;
     this.wh = wh;
     this.stat = "active";
     this.createdAt = new Date();
@@ -142,15 +142,15 @@ export class Product {
   getDisplayLabel(): string {
     let label: string;
     if (this.stat === "deprecated") {
-      label = `[DISCONTINUED] ${this.nm}`;
+      label = `[DISCONTINUED] ${this.name}`;
     } else {
-      if (this.stk === 0) {
-        label = `[OUT OF STOCK] ${this.nm}`;
+      if (this.stock === 0) {
+        label = `[OUT OF STOCK] ${this.name}`;
       } else {
         if (this.stat === "active") {
-          label = this.nm;
+          label = this.name;
         } else {
-          label = this.nm;
+          label = this.name;
         }
       }
     }
@@ -268,9 +268,9 @@ export class Product {
   // --- Pricing ---
 
   getResellerPrice(): number {
-    const mgnAmt = (this.price.amt * this.price.mgn) / 100;
+    const mgnAmt = (this.price.amount * this.price.mgn) / 100;
     const vatAmt = (mgnAmt * this.price.vat) / 100;
-    return this.price.amt + mgnAmt + vatAmt;
+    return this.price.amount + mgnAmt + vatAmt;
   }
 
   async setMargin(mgnPct: number): Promise<void> {
@@ -285,35 +285,35 @@ export class Product {
   // --- Stock ---
 
   async receiveStock(qty: number): Promise<void> {
-    this.stk += qty;
-    this.qty += qty;
+    this.stock += qty;
+    this.quantity += qty;
     this.updatedAt = new Date();
-    console.log(`Restocking ${this.nm} at ${this.wh!.nm}`);
+    console.log(`Restocking ${this.name} at ${this.wh!.nm}`);
     await prisma.product.update({
       where: { id: this.id },
-      data: { stock: this.stk, quantity: this.qty, updatedAt: this.updatedAt },
+      data: { stock: this.stock, quantity: this.quantity, updatedAt: this.updatedAt },
     });
   }
 
   async sell(qty: number): Promise<void> {
-    if (this.stk < qty) throw new Error("Not enough stock");
+    if (this.stock < qty) throw new Error("Not enough stock");
 
-    this.stk -= qty;
+    this.stock -= qty;
     this.updatedAt = new Date();
 
-    if (this.stk === 0) {
+    if (this.stock === 0) {
       this.nextStat = "out_of_stock";
       this.stat = this.nextStat as PrdStat;
     }
 
     await prisma.product.update({
       where: { id: this.id },
-      data: { stock: this.stk, status: this.stat, updatedAt: this.updatedAt },
+      data: { stock: this.stock, status: this.stat, updatedAt: this.updatedAt },
     });
 
     // Notify all regional suppliers
     for (const [rgn, s] of this.splrRgns) {
-      this.notifs.push(this.mkNotif(s.eml, `Product sold: ${this.nm}`, `${qty} unit(s) of ${this.nm} were sold. Remaining stock: ${this.stk}.`));
+      this.notifs.push(this.mkNotif(s.eml, `Product sold: ${this.name}`, `${qty} unit(s) of ${this.name} were sold. Remaining stock: ${this.stock}.`));
     }
   }
 
@@ -321,21 +321,21 @@ export class Product {
 
   async deprecate(): Promise<void> {
     this.stat = "deprecated";
-    this.stk = 0;
+    this.stock = 0;
     this.updatedAt = new Date();
 
     await prisma.product.update({
       where: { id: this.id },
-      data: { status: this.stat, stock: this.stk, updatedAt: this.updatedAt },
+      data: { status: this.stat, stock: this.stock, updatedAt: this.updatedAt },
     });
 
     // Notify all regional suppliers
     for (const [, s] of this.splrRgns) {
-      this.notifs.push(this.mkNotif(s.eml, `Product deprecated: ${this.nm}`, `The product ${this.nm} has been deprecated and removed from the catalog.`));
+      this.notifs.push(this.mkNotif(s.eml, `Product deprecated: ${this.name}`, `The product ${this.name} has been deprecated and removed from the catalog.`));
     }
 
     // Notify customers
-    this.notifs.push(this.mkNotif("customers@omniproduct.com", `Product no longer available: ${this.nm}`, `${this.nm} is no longer available.`));
+    this.notifs.push(this.mkNotif("customers@omniproduct.com", `Product no longer available: ${this.name}`, `${this.name} is no longer available.`));
   }
 
   // small helper to cut down repetition in notif building
