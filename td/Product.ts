@@ -1,3 +1,6 @@
+/**
+ * Modèle de domaine Product — Gestion des produits, stocks, prix et remises.
+ */
 import { PrismaClient, Prisma } from "@prisma/client";
 
 const prisma = new PrismaClient();
