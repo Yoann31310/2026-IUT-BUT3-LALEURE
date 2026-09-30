@@ -223,6 +223,7 @@ export class Product {
     this.validUntil = validUntil;
   }
 
+  // Smell 11: Artificial spin-delay removed to avoid flaky date races against system clock
   async addDiscount(dscCode: string, validUntil: Date): Promise<void> {
     if (validUntil < new Date()) {
       throw new Error("validUntil cannot be in the past");
