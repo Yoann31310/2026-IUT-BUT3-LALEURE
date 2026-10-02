@@ -106,8 +106,6 @@ export class Product {
   updatedAt: Date;
   notifications: Notification[] = [];
   validUntil: Date | null = null;
-  nextStat: ProductStatus | undefined;
-  dscSnapshot: string[] | undefined;
 
   constructor(
     id: string,
