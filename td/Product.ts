@@ -229,8 +229,26 @@ export class Product {
       return;
     }
 
+    const targetKey = this.resolveImageKey(ctx);
+
+    this.images[targetKey] = url;
+    this.updatedAt = new Date();
+    await prisma.product.update({
+      where: { id: this.id },
+      data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
+    });
+  }
+
+  /**
+   * Smell 17: Explicit fallback policy for image context resolution:
+   * 1. Primary: Disambiguate using supplier name if region is present and email is valid.
+   *    Reject loudly if email format is invalid.
+   * 2. Fallback 1: If supplier has region but lacks email, suffix with '-supplier'.
+   * 3. Fallback 2: If supplier lacks region, disambiguate using warehouse name if available.
+   * 4. Fallback 3: If no supplier or warehouse details exist, preserve the base context key.
+   */
+  private resolveImageKey(ctx: string): string {
     let targetKey = ctx;
-    // Multi-supplier resolution policy: use the first registered supplier deterministically
     for (const [, s] of this.suppliersRegions) {
       if (s.region) {
         if (s.email) {
@@ -246,13 +264,7 @@ export class Product {
       }
       break;
     }
-
-    this.images[targetKey] = url;
-    this.updatedAt = new Date();
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
-    });
+    return targetKey;
   }
 
   private isValidHttpUrl(urlString: string): boolean {
