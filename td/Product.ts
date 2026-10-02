@@ -5,6 +5,43 @@ import { PrismaClient, Prisma } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+export class InsufficientStockError extends Error {
+  constructor(message = "Not enough stock") {
+    super(message);
+    this.name = "InsufficientStockError";
+  }
+}
+export class MaxDiscountsExceededError extends Error {
+  constructor(message = "Cannot have more than 2 discounts at the same time") {
+    super(message);
+    this.name = "MaxDiscountsExceededError";
+  }
+}
+export class InvalidDiscountDateError extends Error {
+  constructor(message = "validUntil cannot be in the past") {
+    super(message);
+    this.name = "InvalidDiscountDateError";
+  }
+}
+export class SupplierNotFoundError extends Error {
+  constructor(region: string) {
+    super("No supplier found for region " + region);
+    this.name = "SupplierNotFoundError";
+  }
+}
+export class MalformedSupplierEmailError extends Error {
+  constructor(supplierName: string, email: string) {
+    super("Supplier " + supplierName + " has a malformed email: " + email);
+    this.name = "MalformedSupplierEmailError";
+  }
+}
+export class InvalidImageUrlError extends Error {
+  constructor(message = "url must start with http") {
+    super(message);
+    this.name = "InvalidImageUrlError";
+  }
+}
+
 export type Channel = "email" | "sms" | "push";
 export type Chnl = Channel;
 
@@ -187,7 +224,7 @@ export class Product {
                 if (s.email.indexOf("@") > 0 && s.email.indexOf(".", s.email.indexOf("@")) > s.email.indexOf("@")) {
                   k = ctx + "-" + s.name;
                 } else {
-                  throw new Error(`Supplier ${s.name} has a malformed email: ${s.email}`);
+                  throw new MalformedSupplierEmailError(s.name, s.email);
                 }
               } else {
                 k = ctx + "-supplier";
@@ -206,10 +243,10 @@ export class Product {
           data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
         });
       } else {
-        throw new Error("url must start with http");
+        throw new InvalidImageUrlError();
       }
     } else {
-      throw new Error("url must start with http");
+      throw new InvalidImageUrlError();
     }
   }
 
@@ -224,10 +261,10 @@ export class Product {
   // Smell 11: Artificial spin-delay removed to avoid flaky date races against system clock
   async addDiscount(dscCode: string, validUntil: Date): Promise<void> {
     if (validUntil < new Date()) {
-      throw new Error("validUntil cannot be in the past");
+      throw new InvalidDiscountDateError();
     }
     if (this.discounts.length >= MAX_DISCOUNTS_COUNT) {
-      throw new Error("Cannot have more than 2 discounts at the same time");
+      throw new MaxDiscountsExceededError();
     }
     this.discounts.push(dscCode);
     this.setValidUntil(validUntil);
@@ -242,7 +279,7 @@ export class Product {
 
   async addSupplierToRegion(region: string, suppliers: Supplier[]): Promise<void> {
     const s = suppliers.find((x) => x.region === region);
-    if (!s) throw new Error(`No supplier found for region ${region}`);
+    if (!s) throw new SupplierNotFoundError(region);
 
     this.suppliersRegions.set(region, s);
     this.updatedAt = new Date();
@@ -286,7 +323,7 @@ export class Product {
   }
 
   async sell(qty: number): Promise<void> {
-    if (this.stock < qty) throw new Error("Not enough stock");
+    if (this.stock < qty) throw new InsufficientStockError();
 
     this.stock -= qty;
     this.updatedAt = new Date();
