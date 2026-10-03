@@ -351,6 +351,29 @@ export class Product {
 
   // --- Suppliers ---
 
+  /**
+   * Smell 20: Invariant & hydration for join table 'productSupplier'.
+   * Invariant: 'suppliersRegions' in memory must accurately mirror the database join table.
+   * Hydrates regional suppliers from persistence into memory to prevent stale or missing state.
+   */
+  async loadSuppliersFromDb(availableSuppliers: Supplier[]): Promise<void> {
+    if (typeof (prisma as any).productSupplier?.findMany === "function") {
+      const links = await (prisma as any).productSupplier.findMany({
+        where: { productId: this.id },
+      });
+      if (Array.isArray(links)) {
+        this.suppliersRegions.clear();
+        for (const link of links) {
+          const match = availableSuppliers.find((s) => s.id === link.supplierId);
+          if (match) {
+            this.suppliersRegions.set(link.region, match);
+          }
+        }
+      }
+    }
+  }
+
+
   async addSupplierToRegion(region: string, suppliers: Supplier[]): Promise<void> {
     const s = suppliers.find((x) => x.region === region);
     if (!s) throw new SupplierNotFoundError(region);
