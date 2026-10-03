@@ -65,6 +65,7 @@ export interface Notification {
 }
 
 export class Supplier {
+  public static readonly EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   constructor(
     public id: string,
     public name: string,
@@ -214,39 +215,53 @@ export class Product {
   // --- Catalog / images / discounts ---
 
   async addImage(ctx: string, url: string): Promise<void> {
-    if (url) {
-      if (url.substring(0, 4) === "http") {
-        if (!(this.images[ctx] === undefined)) {
-          let k = ctx;
-          for (const [, s] of this.suppliersRegions) {
-            if (s.region) {
-              if (s.email) {
-                if (s.email.indexOf("@") > 0 && s.email.indexOf(".", s.email.indexOf("@")) > s.email.indexOf("@")) {
-                  k = ctx + "-" + s.name;
-                } else {
-                  throw new MalformedSupplierEmailError(s.name, s.email);
-                }
-              } else {
-                k = ctx + "-supplier";
-              }
-            } else {
-              k = this.warehouse ? ctx + "-" + this.warehouse.name : ctx;
-            }
-          }
-          this.images[k] = url;
-        } else {
-          this.images[ctx] = url;
-        }
-        this.updatedAt = new Date();
-        await prisma.product.update({
-          where: { id: this.id },
-          data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
-        });
-      } else {
-        throw new InvalidImageUrlError();
-      }
-    } else {
+    if (!this.isValidHttpUrl(url)) {
       throw new InvalidImageUrlError();
+    }
+
+    if (this.images[ctx] === undefined) {
+      this.images[ctx] = url;
+      this.updatedAt = new Date();
+      await prisma.product.update({
+        where: { id: this.id },
+        data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
+      });
+      return;
+    }
+
+    let targetKey = ctx;
+    // Multi-supplier resolution policy: use the first registered supplier deterministically
+    for (const [, s] of this.suppliersRegions) {
+      if (s.region) {
+        if (s.email) {
+          if (!Supplier.EMAIL_REGEX.test(s.email)) {
+            throw new MalformedSupplierEmailError(s.name, s.email);
+          }
+          targetKey = `${ctx}-${s.name}`;
+        } else {
+          targetKey = `${ctx}-supplier`;
+        }
+      } else {
+        targetKey = this.warehouse ? `${ctx}-${this.warehouse.name}` : ctx;
+      }
+      break;
+    }
+
+    this.images[targetKey] = url;
+    this.updatedAt = new Date();
+    await prisma.product.update({
+      where: { id: this.id },
+      data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
+    });
+  }
+
+  private isValidHttpUrl(urlString: string): boolean {
+    if (!urlString) return false;
+    try {
+      const parsed = new URL(urlString);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
     }
   }
 
