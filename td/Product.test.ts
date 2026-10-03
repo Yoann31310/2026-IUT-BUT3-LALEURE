@@ -479,3 +479,21 @@ describe("addSupplierToRegion()", () => {
     );
   });
 });
+
+describe("status transitions (Smell 21)", () => {
+  it("throws when trying to sell a deprecated product", async () => {
+    const product = makeTypedProduct();
+    await product.deprecate();
+
+    await expect(product.sell(1)).rejects.toThrow("Cannot operate on deprecated product");
+  });
+
+  it("throws when trying to transition from deprecated back to active", () => {
+    const product = makeTypedProduct();
+    product.status = "deprecated";
+
+    expect(() => product.transitionTo("active")).toThrow(
+      "Cannot transition product status from deprecated to active",
+    );
+  });
+});
