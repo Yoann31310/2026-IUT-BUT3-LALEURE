@@ -13,20 +13,10 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-// Product.ts instantiates a real PrismaClient at module load and calls
-// prisma.product.update()/upsert() from inside its own mutators (this is
-// itself one of the documented smells — the entity is its own repository).
-// These tests care about naming, not persistence, so Prisma is stubbed out
-// entirely rather than requiring a live database.
-vi.mock("@prisma/client", () => ({
-  PrismaClient: vi.fn().mockImplementation(function (this: any) {
-    this.product = { update: vi.fn().mockResolvedValue(undefined) };
-    this.productSupplier = { upsert: vi.fn().mockResolvedValue(undefined) };
-  }),
-  Prisma: {},
-}));
-
-import { Product, Price, Supplier, Warehouse, NotificationService, prisma } from "./Product";
+// Smell 25 : Product ne dépend plus de Prisma. Par défaut il utilise un
+// repository en mémoire, donc plus besoin de mocker la base de données.
+import { Product, Price, Supplier, Warehouse, NotificationService } from "./Product";
+import { InMemoryProductRepository, ProductRepository } from "./ProductRepository";
 
 function hasProp(obj: unknown, propName: string): boolean {
   return typeof obj === "object" && obj !== null && propName in (obj as object);
@@ -174,7 +164,7 @@ describe("Product", () => {
 // do what they claim, using today's real (abbreviated) typed API rather
 // than `as any` casts.
 
-function makeTypedProduct() {
+function makeTypedProduct(repository?: ProductRepository) {
   const price = new Price(50, "EUR");
   return new Product(
     "p1",
@@ -189,6 +179,7 @@ function makeTypedProduct() {
     100,
     100,
     null,
+    repository,
   );
 }
 
@@ -500,8 +491,9 @@ describe("status transitions (Smell 21)", () => {
 
 describe("rollback on persistence failure (Smell 22)", () => {
   it("rolls back in-memory state when persistence throws during sell()", async () => {
-    const product = makeTypedProduct();
-    vi.spyOn(prisma.product, "update").mockRejectedValueOnce(new Error("DB Connection Error"));
+    const repository = new InMemoryProductRepository();
+    vi.spyOn(repository, "update").mockRejectedValueOnce(new Error("DB Connection Error"));
+    const product = makeTypedProduct(repository);
 
     await expect(product.sell(10)).rejects.toThrow("DB Connection Error");
     expect(product.stock).toBe(100);
@@ -531,5 +523,29 @@ describe("NotificationService (Smell 24)", () => {
     expect(service.notifications.length).toBe(1);
     expect(service.notifications[0].recipient).toBe("acme@example.com");
     expect(service.notifications[0].subject).toBe("Product sold: Widget");
+  });
+});
+
+describe("persistence through a repository (Smell 25)", () => {
+  it("saves the new stock and status in the repository after a sale", async () => {
+    const repository = new InMemoryProductRepository();
+    const product = makeTypedProduct(repository);
+
+    await product.sell(100);
+
+    expect(repository.updates).toHaveLength(1);
+    expect(repository.updates[0].productId).toBe("p1");
+    expect(repository.updates[0].changes).toMatchObject({ stock: 0, status: "out_of_stock" });
+  });
+
+  it("reloads the regional suppliers saved in the repository", async () => {
+    const repository = new InMemoryProductRepository();
+    const supplier = new Supplier("s1", "Acme Corp", "acme@example.com", "EU");
+    await makeTypedProduct(repository).addSupplierToRegion("EU", [supplier]);
+
+    const reloaded = makeTypedProduct(repository);
+    await reloaded.loadSuppliersFromDb([supplier]);
+
+    expect(reloaded.suppliersRegions.get("EU")).toBe(supplier);
   });
 });

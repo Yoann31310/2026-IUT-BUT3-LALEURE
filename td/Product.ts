@@ -1,9 +1,8 @@
 /**
  * Modèle de domaine Product — Gestion des produits, stocks, prix et remises.
+ * La persistance passe par un ProductRepository (voir ARCHITECTURE.md).
  */
-import { PrismaClient, Prisma } from "@prisma/client";
-
-export const prisma = new PrismaClient();
+import { InMemoryProductRepository, ProductRepository } from "./ProductRepository";
 
 export class InsufficientStockError extends Error {
   constructor(message = "Not enough stock") {
@@ -271,6 +270,7 @@ export class Product {
     quantity: number,
     stock: number,
     warehouse: Warehouse | null,
+    private readonly repository: ProductRepository = new InMemoryProductRepository(),
   ) {
     this.id = id;
     this.name = name;
@@ -349,24 +349,11 @@ export class Product {
       throw new InvalidImageUrlError();
     }
 
-    if (this.images[ctx] === undefined) {
-      this.images[ctx] = url;
-      this.updatedAt = new Date();
-      await prisma.product.update({
-        where: { id: this.id },
-        data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
-      });
-      return;
-    }
-
-    const targetKey = this.resolveImageKey(ctx);
+    const targetKey = this.images[ctx] === undefined ? ctx : this.resolveImageKey(ctx);
 
     this.images[targetKey] = url;
     this.updatedAt = new Date();
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
-    });
+    await this.repository.update(this.id, { images: this.images, updatedAt: this.updatedAt });
   }
 
   /**
@@ -416,11 +403,8 @@ export class Product {
     this.discounts.push(dscCode);
     this.setValidUntil(validUntil);
     this.updatedAt = new Date();
-    // Smell 15: Await floating Prisma promise to ensure persistence completes and errors are caught
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { discounts: this.discounts, updatedAt: this.updatedAt },
-    });
+    // Smell 15: on attend la fin de la sauvegarde pour que les erreurs soient bien interceptées
+    await this.repository.update(this.id, { discounts: this.discounts, updatedAt: this.updatedAt });
   }
 
   // --- Suppliers ---
@@ -431,18 +415,12 @@ export class Product {
    * Hydrates regional suppliers from persistence into memory to prevent stale or missing state.
    */
   async loadSuppliersFromDb(availableSuppliers: Supplier[]): Promise<void> {
-    if (typeof (prisma as any).productSupplier?.findMany === "function") {
-      const links = await (prisma as any).productSupplier.findMany({
-        where: { productId: this.id },
-      });
-      if (Array.isArray(links)) {
-        this.suppliersRegions.clear();
-        for (const link of links) {
-          const match = availableSuppliers.find((s) => s.id === link.supplierId);
-          if (match) {
-            this.suppliersRegions.set(link.region, match);
-          }
-        }
+    const links = await this.repository.findSupplierLinks(this.id);
+    this.suppliersRegions.clear();
+    for (const link of links) {
+      const match = availableSuppliers.find((s) => s.id === link.supplierId);
+      if (match) {
+        this.suppliersRegions.set(link.region, match);
       }
     }
   }
@@ -455,11 +433,7 @@ export class Product {
     this.suppliersRegions.set(region, s);
     this.updatedAt = new Date();
 
-    await prisma.productSupplier.upsert({
-      where: { productId_region: { productId: this.id, region: region } },
-      create: { productId: this.id, region: region, supplierId: s.id },
-      update: { supplierId: s.id },
-    });
+    await this.repository.saveSupplierRegion(this.id, region, s.id);
   }
 
   // --- Pricing ---
@@ -471,10 +445,7 @@ export class Product {
   async setMargin(mgnPct: number): Promise<void> {
     this.price.margin = mgnPct;
     this.updatedAt = new Date();
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { priceMargin: mgnPct, updatedAt: this.updatedAt },
-    });
+    await this.repository.update(this.id, { priceMargin: mgnPct, updatedAt: this.updatedAt });
   }
 
   // --- Stock ---
@@ -489,9 +460,10 @@ export class Product {
     this.updatedAt = new Date();
     const whLocation = this.warehouse ? this.warehouse.getLocationSuffix() : "";
     console.log(`Restocking ${this.name}${whLocation}`);
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { stock: this.stock, quantity: this.quantity, updatedAt: this.updatedAt },
+    await this.repository.update(this.id, {
+      stock: this.stock,
+      quantity: this.quantity,
+      updatedAt: this.updatedAt,
     });
   }
 
@@ -508,9 +480,10 @@ export class Product {
     const nextUpdatedAt = new Date();
 
     try {
-      await prisma.product.update({
-        where: { id: this.id },
-        data: { stock: nextStock, status: nextStatus, updatedAt: nextUpdatedAt },
+      await this.repository.update(this.id, {
+        stock: nextStock,
+        status: nextStatus,
+        updatedAt: nextUpdatedAt,
       });
     } catch (err) {
       this.stock = previousStock;
@@ -533,22 +506,12 @@ export class Product {
     this.stock = 0;
     this.updatedAt = new Date();
 
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { status: this.status, stock: this.stock, updatedAt: this.updatedAt },
+    await this.repository.update(this.id, {
+      status: this.status,
+      stock: this.stock,
+      updatedAt: this.updatedAt,
     });
 
     this.notificationService.notifyProductDeprecated(this.name, this.id, this.suppliersRegions.values());
-  }
-
-
-  private notifyRegionalSuppliers(subject: string, body: string): void {
-    for (const [, supplier] of this.suppliersRegions) {
-      this.notifications.push(supplier.createNotification(subject, body, this.id));
-    }
-  }
-
-  private mkNotif(recipient: string, subject: string, body: string): Notification {
-    return createNotification(recipient, subject, body, "email", this.id);
   }
 }
