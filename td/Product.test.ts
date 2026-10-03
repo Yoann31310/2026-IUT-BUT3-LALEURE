@@ -447,6 +447,17 @@ describe("addImage()", () => {
       "Supplier Acme Corp has a malformed email: not-an-email",
     );
   });
+
+  it("uses the first registered supplier key when multiple suppliers exist", async () => {
+    const product = makeTypedProduct();
+    product.splrRgns.set("EU", new Supplier("s1", "Acme Corp", "acme@example.com", "EU"));
+    product.splrRgns.set("US", new Supplier("s2", "Beta LLC", "beta@example.com", "US"));
+    await product.addImage("hero", "http://img/hero-v1.png");
+
+    await product.addImage("hero", "http://img/hero-v2.png");
+
+    expect(product.imgs["hero-Acme Corp"]).toBe("http://img/hero-v2.png");
+  });
 });
 
 describe("addSupplierToRegion()", () => {
