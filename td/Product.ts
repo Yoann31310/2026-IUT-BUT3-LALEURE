@@ -86,29 +86,6 @@ export class Price {
     return this.amount + mgnAmt + vatAmt;
   }
 
-  getAmt(): number {
-    return this.amount;
-  }
-
-  setAmt(amt: number): void {
-    this.amount = amt;
-  }
-
-  getCcy(): string {
-    return this.currency;
-  }
-
-  setCcy(ccy: string): void {
-    this.currency = ccy;
-  }
-
-  getMgn(): number {
-    return this.margin;
-  }
-
-  setMgn(mgnPct: number): void {
-    this.margin = mgnPct;
-  }
 }
 
 export class Product {
