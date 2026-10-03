@@ -507,3 +507,16 @@ describe("rollback on persistence failure (Smell 22)", () => {
     expect(product.stock).toBe(100);
   });
 });
+
+describe("notification lifecycle (Smell 23)", () => {
+  it("flushes and empties accumulated notifications to prevent memory leaks", async () => {
+    const product = makeTypedProduct();
+    product.splrRgns.set("EU", new Supplier("s1", "Acme Corp", "acme@example.com", "EU"));
+    await product.sell(1);
+
+    expect(product.notifications.length).toBe(1);
+    const flushed = product.flushNotifications();
+    expect(flushed.length).toBe(1);
+    expect(product.notifications.length).toBe(0);
+  });
+});
