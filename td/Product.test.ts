@@ -26,7 +26,7 @@ vi.mock("@prisma/client", () => ({
   Prisma: {},
 }));
 
-import { Product, Price, Supplier, Warehouse, prisma } from "./Product";
+import { Product, Price, Supplier, Warehouse, NotificationService, prisma } from "./Product";
 
 function hasProp(obj: unknown, propName: string): boolean {
   return typeof obj === "object" && obj !== null && propName in (obj as object);
@@ -518,5 +518,18 @@ describe("notification lifecycle (Smell 23)", () => {
     const flushed = product.flushNotifications();
     expect(flushed.length).toBe(1);
     expect(product.notifications.length).toBe(0);
+  });
+});
+
+describe("NotificationService (Smell 24)", () => {
+  it("creates notifications without needing a Product instance", () => {
+    const service = new NotificationService();
+    const supplier = new Supplier("s1", "Acme Corp", "acme@example.com", "EU");
+
+    service.notifyProductSold("Widget", "p1", 2, 8, [supplier]);
+
+    expect(service.notifications.length).toBe(1);
+    expect(service.notifications[0].recipient).toBe("acme@example.com");
+    expect(service.notifications[0].subject).toBe("Product sold: Widget");
   });
 });
