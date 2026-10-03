@@ -64,6 +64,29 @@ export interface Notification {
   prdId?: string;
 }
 
+export function createNotification(
+  recipient: string,
+  subject: string,
+  body: string,
+  channel: Channel,
+  productId?: string,
+): Notification {
+  return {
+    id: crypto.randomUUID(),
+    recipient,
+    subject,
+    body,
+    channel,
+    sentAt: new Date(),
+    productId,
+    recip: recipient,
+    subj: subject,
+    bod: body,
+    chnl: channel,
+    prdId: productId,
+  };
+}
+
 export class Supplier {
   public static readonly EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   constructor(
@@ -79,6 +102,31 @@ export class Supplier {
   set eml(v: string) { this.email = v; }
   get rgn(): string { return this.region; }
   set rgn(v: string) { this.region = v; }
+
+  hasRegion(): boolean {
+    return Boolean(this.region);
+  }
+
+  hasValidEmail(): boolean {
+    return Boolean(this.email && Supplier.EMAIL_REGEX.test(this.email));
+  }
+
+  getDisambiguationKey(ctx: string): string {
+    if (!this.region) {
+      return ctx;
+    }
+    if (!this.email) {
+      return `${ctx}-supplier`;
+    }
+    if (!Supplier.EMAIL_REGEX.test(this.email)) {
+      throw new MalformedSupplierEmailError(this.name, this.email);
+    }
+    return `${ctx}-${this.name}`;
+  }
+
+  createNotification(subject: string, body: string, productId: string): Notification {
+    return createNotification(this.email, subject, body, "email", productId);
+  }
 }
 
 export class Warehouse {
@@ -93,6 +141,14 @@ export class Warehouse {
   set nm(v: string) { this.name = v; }
   get rgn(): string { return this.region; }
   set rgn(v: string) { this.region = v; }
+
+  getLocationSuffix(): string {
+    return ` at ${this.name}`;
+  }
+
+  getDisambiguationKey(ctx: string): string {
+    return `${ctx}-${this.name}`;
+  }
 }
 
 export const DEFAULT_MARGIN_PERCENT = 15;
@@ -248,23 +304,13 @@ export class Product {
    * 4. Fallback 3: If no supplier or warehouse details exist, preserve the base context key.
    */
   private resolveImageKey(ctx: string): string {
-    let targetKey = ctx;
-    for (const [, s] of this.suppliersRegions) {
-      if (s.region) {
-        if (s.email) {
-          if (!Supplier.EMAIL_REGEX.test(s.email)) {
-            throw new MalformedSupplierEmailError(s.name, s.email);
-          }
-          targetKey = `${ctx}-${s.name}`;
-        } else {
-          targetKey = `${ctx}-supplier`;
-        }
-      } else {
-        targetKey = this.warehouse ? `${ctx}-${this.warehouse.name}` : ctx;
+    for (const [, supplier] of this.suppliersRegions) {
+      if (supplier.hasRegion()) {
+        return supplier.getDisambiguationKey(ctx);
       }
-      break;
+      return this.warehouse ? this.warehouse.getDisambiguationKey(ctx) : ctx;
     }
-    return targetKey;
+    return ctx;
   }
 
   private isValidHttpUrl(urlString: string): boolean {
@@ -340,8 +386,8 @@ export class Product {
     this.stock += qty;
     this.quantity += qty;
     this.updatedAt = new Date();
-    const whName = this.warehouse ? " at " + this.warehouse.name : "";
-    console.log("Restocking " + this.name + whName);
+    const whLocation = this.warehouse ? this.warehouse.getLocationSuffix() : "";
+    console.log(`Restocking ${this.name}${whLocation}`);
     await prisma.product.update({
       where: { id: this.id },
       data: { stock: this.stock, quantity: this.quantity, updatedAt: this.updatedAt },
@@ -394,28 +440,12 @@ export class Product {
 
 
   private notifyRegionalSuppliers(subject: string, body: string): void {
-    for (const [, s] of this.suppliersRegions) {
-      this.notifications.push(this.mkNotif(s.email, subject, body));
+    for (const [, supplier] of this.suppliersRegions) {
+      this.notifications.push(supplier.createNotification(subject, body, this.id));
     }
   }
 
-  // small helper to cut down repetition in notif building
   private mkNotif(recipient: string, subject: string, body: string): Notification {
-    const notif: Notification = {
-      id: crypto.randomUUID(),
-      recipient,
-      subject,
-      body,
-      channel: "email",
-      sentAt: new Date(),
-      productId: this.id,
-      // Backward compatibility fields
-      recip: recipient,
-      subj: subject,
-      bod: body,
-      chnl: "email",
-      prdId: this.id,
-    };
-    return notif;
+    return createNotification(recipient, subject, body, "email", this.id);
   }
 }
