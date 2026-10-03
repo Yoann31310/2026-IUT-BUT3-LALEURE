@@ -3,7 +3,7 @@
  */
 import { PrismaClient, Prisma } from "@prisma/client";
 
-const prisma = new PrismaClient();
+export const prisma = new PrismaClient();
 
 export class InsufficientStockError extends Error {
   constructor(message = "Not enough stock") {
@@ -455,19 +455,30 @@ export class Product {
     if (this.status === "deprecated") throw new ProductDeprecatedError(this.name);
     if (this.stock < qty) throw new InsufficientStockError();
 
-    this.stock -= qty;
-    this.updatedAt = new Date();
+    const previousStock = this.stock;
+    const previousStatus = this.status;
+    const previousUpdatedAt = this.updatedAt;
 
-    if (this.stock === 0) {
-      this.transitionTo("out_of_stock");
+    const nextStock = this.stock - qty;
+    const nextStatus = nextStock === 0 ? "out_of_stock" : this.status;
+    const nextUpdatedAt = new Date();
+
+    try {
+      await prisma.product.update({
+        where: { id: this.id },
+        data: { stock: nextStock, status: nextStatus, updatedAt: nextUpdatedAt },
+      });
+    } catch (err) {
+      this.stock = previousStock;
+      this.status = previousStatus;
+      this.updatedAt = previousUpdatedAt;
+      throw err;
     }
 
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { stock: this.stock, status: this.status, updatedAt: this.updatedAt },
-    });
+    this.stock = nextStock;
+    this.status = nextStatus;
+    this.updatedAt = nextUpdatedAt;
 
-    // Notify all regional suppliers
     this.notifyRegionalSuppliers(
       `Product sold: ${this.name}`,
       `${qty} unit(s) of ${this.name} were sold. Remaining stock: ${this.stock}.`
