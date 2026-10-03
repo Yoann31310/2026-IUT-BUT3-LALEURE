@@ -203,6 +203,39 @@ export class Price {
 
 }
 
+export class NotificationService {
+  constructor(public notifications: Notification[] = []) {}
+
+  notifyProductSold(productName: string, productId: string, qty: number, remainingStock: number, suppliers: Iterable<Supplier>): void {
+    const subject = `Product sold: ${productName}`;
+    const body = `${qty} unit(s) of ${productName} were sold. Remaining stock: ${remainingStock}.`;
+    for (const supplier of suppliers) {
+      this.notifications.push(supplier.createNotification(subject, body, productId));
+    }
+  }
+
+  notifyProductDeprecated(productName: string, productId: string, suppliers: Iterable<Supplier>): void {
+    const subject = `Product deprecated: ${productName}`;
+    const body = `The product ${productName} has been deprecated and removed from the catalog.`;
+    for (const supplier of suppliers) {
+      this.notifications.push(supplier.createNotification(subject, body, productId));
+    }
+    this.notifications.push(
+      createNotification(
+        "customers@omniproduct.com",
+        `Product no longer available: ${productName}`,
+        `${productName} is no longer available.`,
+        "email",
+        productId,
+      )
+    );
+  }
+
+  flush(): Notification[] {
+    return this.notifications.splice(0, this.notifications.length);
+  }
+}
+
 export class Product {
   id: string;
   name: string;
@@ -220,6 +253,9 @@ export class Product {
   createdAt: Date;
   updatedAt: Date;
   notifications: Notification[] = [];
+  private get notificationService(): NotificationService {
+    return new NotificationService(this.notifications);
+  }
   validUntil: Date | null = null;
 
   constructor(
@@ -281,9 +317,7 @@ export class Product {
    * Drains and returns all pending notifications to prevent memory leak accumulation.
    */
   flushNotifications(): Notification[] {
-    const pending = [...this.notifications];
-    this.notifications = [];
-    return pending;
+    return this.notificationService.flush();
   }
 
   get notifs(): Notification[] { return this.notifications; }
@@ -489,10 +523,7 @@ export class Product {
     this.status = nextStatus;
     this.updatedAt = nextUpdatedAt;
 
-    this.notifyRegionalSuppliers(
-      `Product sold: ${this.name}`,
-      `${qty} unit(s) of ${this.name} were sold. Remaining stock: ${this.stock}.`
-    );
+    this.notificationService.notifyProductSold(this.name, this.id, qty, this.stock, this.suppliersRegions.values());
   }
 
   // --- Lifecycle ---
@@ -507,14 +538,7 @@ export class Product {
       data: { status: this.status, stock: this.stock, updatedAt: this.updatedAt },
     });
 
-    // Notify all regional suppliers
-    this.notifyRegionalSuppliers(
-      `Product deprecated: ${this.name}`,
-      `The product ${this.name} has been deprecated and removed from the catalog.`
-    );
-
-    // Notify customers
-    this.notifications.push(this.mkNotif("customers@omniproduct.com", `Product no longer available: ${this.name}`, `${this.name} is no longer available.`));
+    this.notificationService.notifyProductDeprecated(this.name, this.id, this.suppliersRegions.values());
   }
 
 
