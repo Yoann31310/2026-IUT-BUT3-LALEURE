@@ -26,7 +26,7 @@ vi.mock("@prisma/client", () => ({
   Prisma: {},
 }));
 
-import { Product, Price, Supplier, Warehouse } from "./Product";
+import { Product, Price, Supplier, Warehouse, prisma } from "./Product";
 
 function hasProp(obj: unknown, propName: string): boolean {
   return typeof obj === "object" && obj !== null && propName in (obj as object);
@@ -495,5 +495,15 @@ describe("status transitions (Smell 21)", () => {
     expect(() => product.transitionTo("active")).toThrow(
       "Cannot transition product status from deprecated to active",
     );
+  });
+});
+
+describe("rollback on persistence failure (Smell 22)", () => {
+  it("rolls back in-memory state when persistence throws during sell()", async () => {
+    const product = makeTypedProduct();
+    vi.spyOn(prisma.product, "update").mockRejectedValueOnce(new Error("DB Connection Error"));
+
+    await expect(product.sell(10)).rejects.toThrow("DB Connection Error");
+    expect(product.stock).toBe(100);
   });
 });
