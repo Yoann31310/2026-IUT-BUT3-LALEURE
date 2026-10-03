@@ -276,6 +276,16 @@ export class Product {
   set wh(v: Warehouse | null) { this.warehouse = v; }
   get stat(): ProductStatus { return this.status; }
   set stat(v: ProductStatus) { this.status = v; }
+  /**
+   * Smell 23: Notification lifecycle management.
+   * Drains and returns all pending notifications to prevent memory leak accumulation.
+   */
+  flushNotifications(): Notification[] {
+    const pending = [...this.notifications];
+    this.notifications = [];
+    return pending;
+  }
+
   get notifs(): Notification[] { return this.notifications; }
   set notifs(v: Notification[]) { this.notifications = v; }
 
