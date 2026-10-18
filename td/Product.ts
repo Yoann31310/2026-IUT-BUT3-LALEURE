@@ -1,208 +1,399 @@
-// Translated from Models/{Product,Price,Notification,Supplier,Warehouse}.cs
-//
-// The C# version kept two representations of the same data in sync by hand:
-// domain fields marked [NotMapped] (Price, Discounts, Images, SuppliersRegions,
-// Warehouse) plus flattened EF columns (PriceAmount/DiscountsCsv/ImagesJson/...),
-// reconciled via SyncEfColumns()/HydrateFromEfColumns(). Prisma maps Decimal,
-// String[] and Json columns natively (see schema.prisma), so that flattening
-// and the two sync methods are gone: PrismaClient reads/writes plain objects
-// and there is exactly one representation of each field.
-
+/**
+ * Modèle de domaine Product — Gestion des produits, stocks, prix et remises.
+ */
 import { PrismaClient, Prisma } from "@prisma/client";
 
-const prisma = new PrismaClient();
+export const prisma = new PrismaClient();
 
-export type Chnl = "email" | "sms" | "push";
-export type PrdStat = "active" | "out_of_stock" | "deprecated";
+export class InsufficientStockError extends Error {
+  constructor(message = "Not enough stock") {
+    super(message);
+    this.name = "InsufficientStockError";
+  }
+}
+export class MaxDiscountsExceededError extends Error {
+  constructor(message = "Cannot have more than 2 discounts at the same time") {
+    super(message);
+    this.name = "MaxDiscountsExceededError";
+  }
+}
+export class InvalidDiscountDateError extends Error {
+  constructor(message = "validUntil cannot be in the past") {
+    super(message);
+    this.name = "InvalidDiscountDateError";
+  }
+}
+export class SupplierNotFoundError extends Error {
+  constructor(region: string) {
+    super("No supplier found for region " + region);
+    this.name = "SupplierNotFoundError";
+  }
+}
+export class MalformedSupplierEmailError extends Error {
+  constructor(supplierName: string, email: string) {
+    super("Supplier " + supplierName + " has a malformed email: " + email);
+    this.name = "MalformedSupplierEmailError";
+  }
+}
+export class InvalidImageUrlError extends Error {
+  constructor(message = "url must start with http") {
+    super(message);
+    this.name = "InvalidImageUrlError";
+  }
+}
+
+export type Channel = "email" | "sms" | "push";
+export type Chnl = Channel;
+
+export type ProductStatus = "active" | "out_of_stock" | "deprecated";
+export type PrdStat = ProductStatus;
+
+export class InvalidStatusTransitionError extends Error {
+  constructor(from: ProductStatus, to: ProductStatus) {
+    super(`Cannot transition product status from ${from} to ${to}`);
+    this.name = "InvalidStatusTransitionError";
+  }
+}
+
+export class ProductDeprecatedError extends Error {
+  constructor(productName: string) {
+    super(`Cannot operate on deprecated product: ${productName}`);
+    this.name = "ProductDeprecatedError";
+  }
+}
+
+export const ALLOWED_STATUS_TRANSITIONS: Record<ProductStatus, readonly ProductStatus[]> = {
+  active: ["out_of_stock", "deprecated"],
+  out_of_stock: ["active", "deprecated"],
+  deprecated: [],
+};
+
 
 export interface Notification {
   id: string;
-  recip: string;
-  subj: string;
-  bod: string;
-  chnl: Chnl;
+  recipient: string;
+  subject: string;
+  body: string;
+  channel: Channel;
   sentAt: Date;
+  productId?: string;
+  // Backward compatibility aliases
+  recip?: string;
+  subj?: string;
+  bod?: string;
+  chnl?: Channel;
   prdId?: string;
 }
 
+export function createNotification(
+  recipient: string,
+  subject: string,
+  body: string,
+  channel: Channel,
+  productId?: string,
+): Notification {
+  return {
+    id: crypto.randomUUID(),
+    recipient,
+    subject,
+    body,
+    channel,
+    sentAt: new Date(),
+    productId,
+    recip: recipient,
+    subj: subject,
+    bod: body,
+    chnl: channel,
+    prdId: productId,
+  };
+}
+
 export class Supplier {
+  public static readonly EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   constructor(
     public id: string,
-    public nm: string,
-    public eml: string,
-    public rgn: string,
+    public name: string,
+    public email: string,
+    public region: string,
   ) {}
+
+  get nm(): string { return this.name; }
+  set nm(v: string) { this.name = v; }
+  get eml(): string { return this.email; }
+  set eml(v: string) { this.email = v; }
+  get rgn(): string { return this.region; }
+  set rgn(v: string) { this.region = v; }
+
+  hasRegion(): boolean {
+    return Boolean(this.region);
+  }
+
+  hasValidEmail(): boolean {
+    return Boolean(this.email && Supplier.EMAIL_REGEX.test(this.email));
+  }
+
+  getDisambiguationKey(ctx: string): string {
+    if (!this.region) {
+      return ctx;
+    }
+    if (!this.email) {
+      return `${ctx}-supplier`;
+    }
+    if (!Supplier.EMAIL_REGEX.test(this.email)) {
+      throw new MalformedSupplierEmailError(this.name, this.email);
+    }
+    return `${ctx}-${this.name}`;
+  }
+
+  createNotification(subject: string, body: string, productId: string): Notification {
+    return createNotification(this.email, subject, body, "email", productId);
+  }
 }
 
 export class Warehouse {
   constructor(
     public id: string,
-    public nm: string,
-    public addr: string,
-    public rgn: string,
+    public name: string,
+    public address: string,
+    public region: string,
   ) {}
+
+  get nm(): string { return this.name; }
+  set nm(v: string) { this.name = v; }
+  get rgn(): string { return this.region; }
+  set rgn(v: string) { this.region = v; }
+
+  getLocationSuffix(): string {
+    return ` at ${this.name}`;
+  }
+
+  getDisambiguationKey(ctx: string): string {
+    return `${ctx}-${this.name}`;
+  }
 }
 
+export const DEFAULT_MARGIN_PERCENT = 15;
+export const DEFAULT_VAT_PERCENT = 20;
+export const MAX_DISCOUNTS_COUNT = 2;
 export class Price {
-  amt: number;
-  ccy: string;
-  mgn: number; // percentage
+  amount: number;
+  currency: string;
+  margin: number; // percentage
   vat: number; // percentage, applied on margin only
 
-  constructor(amt: number, ccy: string) {
-    this.amt = amt;
-    this.ccy = ccy;
-    this.mgn = 15;
-    this.vat = 20;
+  constructor(amount: number, currency: string) {
+    this.amount = amount;
+    this.currency = currency;
+    this.margin = DEFAULT_MARGIN_PERCENT;
+    this.vat = DEFAULT_VAT_PERCENT;
   }
+
+  get amt(): number { return this.amount; }
+  set amt(v: number) { this.amount = v; }
+  get ccy(): string { return this.currency; }
+  set ccy(v: string) { this.currency = v; }
+  get mgn(): number { return this.margin; }
+  set mgn(v: number) { this.margin = v; }
 
   getResellerPrice(): number {
-    const mgnAmt = (this.amt * this.mgn) / 100;
+    const mgnAmt = (this.amount * this.margin) / 100;
     const vatAmt = (mgnAmt * this.vat) / 100;
-    return this.amt + mgnAmt + vatAmt;
+    return this.amount + mgnAmt + vatAmt;
   }
 
-  getAmt(): number {
-    return this.amt;
+}
+
+export class NotificationService {
+  constructor(public notifications: Notification[] = []) {}
+
+  notifyProductSold(productName: string, productId: string, qty: number, remainingStock: number, suppliers: Iterable<Supplier>): void {
+    const subject = `Product sold: ${productName}`;
+    const body = `${qty} unit(s) of ${productName} were sold. Remaining stock: ${remainingStock}.`;
+    for (const supplier of suppliers) {
+      this.notifications.push(supplier.createNotification(subject, body, productId));
+    }
   }
 
-  setAmt(amt: number): void {
-    this.amt = amt;
+  notifyProductDeprecated(productName: string, productId: string, suppliers: Iterable<Supplier>): void {
+    const subject = `Product deprecated: ${productName}`;
+    const body = `The product ${productName} has been deprecated and removed from the catalog.`;
+    for (const supplier of suppliers) {
+      this.notifications.push(supplier.createNotification(subject, body, productId));
+    }
+    this.notifications.push(
+      createNotification(
+        "customers@omniproduct.com",
+        `Product no longer available: ${productName}`,
+        `${productName} is no longer available.`,
+        "email",
+        productId,
+      )
+    );
   }
 
-  getCcy(): string {
-    return this.ccy;
-  }
-
-  setCcy(ccy: string): void {
-    this.ccy = ccy;
-  }
-
-  getMgn(): number {
-    return this.mgn;
-  }
-
-  setMgn(mgn: number): void {
-    this.mgn = mgn;
+  flush(): Notification[] {
+    return this.notifications.splice(0, this.notifications.length);
   }
 }
 
 export class Product {
   id: string;
-  nm: string;
-  slg: string;
+  name: string;
+  slug: string;
   price: Price;
-  dscs: string[];
-  imgs: Record<string, string>; // key = context ("thumbnail", "hero", ...), value = url
-  splrRgns: Map<string, Supplier>; // key = region
-  wgt: number;
-  dims: string;
-  qty: number;
-  stk: number;
-  wh: Warehouse | null;
-  stat: PrdStat;
+  discounts: string[];
+  images: Record<string, string>; // key = context ("thumbnail", "hero", ...), value = url
+  suppliersRegions: Map<string, Supplier>; // key = region
+  weight: number;
+  dimensions: string;
+  quantity: number;
+  stock: number;
+  warehouse: Warehouse | null;
+  status: ProductStatus;
   createdAt: Date;
   updatedAt: Date;
-  notifs: Notification[] = [];
+  notifications: Notification[] = [];
+  private get notificationService(): NotificationService {
+    return new NotificationService(this.notifications);
+  }
   validUntil: Date | null = null;
-  nextStat: PrdStat | undefined;
-  dscSnapshot: string[] | undefined;
 
   constructor(
     id: string,
-    nm: string,
-    slg: string,
+    name: string,
+    slug: string,
     price: Price,
-    dscs: string[],
-    imgs: Record<string, string>,
-    splrRgns: Map<string, Supplier>,
-    wgt: number,
-    dims: string,
-    qty: number,
-    stk: number,
-    wh: Warehouse | null,
+    discounts: string[],
+    images: Record<string, string>,
+    suppliersRegions: Map<string, Supplier>,
+    weight: number,
+    dimensions: string,
+    quantity: number,
+    stock: number,
+    warehouse: Warehouse | null,
   ) {
     this.id = id;
-    this.nm = nm;
-    this.slg = slg;
+    this.name = name;
+    this.slug = slug;
     this.price = price;
-    this.dscs = dscs;
-    this.imgs = imgs;
-    this.splrRgns = splrRgns;
-    this.wgt = wgt;
-    this.dims = dims;
-    this.qty = qty;
-    this.stk = stk;
-    this.wh = wh;
-    this.stat = "active";
+    this.discounts = discounts;
+    this.images = images;
+    this.suppliersRegions = suppliersRegions;
+    this.weight = weight;
+    this.dimensions = dimensions;
+    this.quantity = quantity;
+    this.stock = stock;
+    this.warehouse = warehouse;
+    this.status = "active";
     this.createdAt = new Date();
     this.updatedAt = new Date();
   }
 
-  getDisplayLabel(): string {
-    let label: string;
-    if (this.stat === "deprecated") {
-      label = `[DISCONTINUED] ${this.nm}`;
-    } else {
-      if (this.stk === 0) {
-        label = `[OUT OF STOCK] ${this.nm}`;
-      } else {
-        if (this.stat === "active") {
-          label = this.nm;
-        } else {
-          label = this.nm;
-        }
-      }
+  // Backward compatibility getters / setters
+  get nm(): string { return this.name; }
+  set nm(v: string) { this.name = v; }
+  get slg(): string { return this.slug; }
+  set slg(v: string) { this.slug = v; }
+  get dscs(): string[] { return this.discounts; }
+  set dscs(v: string[]) { this.discounts = v; }
+  get imgs(): Record<string, string> { return this.images; }
+  set imgs(v: Record<string, string>) { this.images = v; }
+  get splrRgns(): Map<string, Supplier> { return this.suppliersRegions; }
+  set splrRgns(v: Map<string, Supplier>) { this.suppliersRegions = v; }
+  get wgt(): number { return this.weight; }
+  set wgt(v: number) { this.weight = v; }
+  get dims(): string { return this.dimensions; }
+  set dims(v: string) { this.dimensions = v; }
+  get qty(): number { return this.quantity; }
+  set qty(v: number) { this.quantity = v; }
+  get stk(): number { return this.stock; }
+  set stk(v: number) { this.stock = v; }
+  get wh(): Warehouse | null { return this.warehouse; }
+  set wh(v: Warehouse | null) { this.warehouse = v; }
+  get stat(): ProductStatus { return this.status; }
+  set stat(v: ProductStatus) { this.status = v; }
+  /**
+   * Smell 23: Notification lifecycle management.
+   * Drains and returns all pending notifications to prevent memory leak accumulation.
+   */
+  flushNotifications(): Notification[] {
+    return this.notificationService.flush();
+  }
+
+  get notifs(): Notification[] { return this.notifications; }
+  set notifs(v: Notification[]) { this.notifications = v; }
+
+  transitionTo(newStatus: ProductStatus): void {
+    if (this.status === newStatus) return;
+    const allowed = ALLOWED_STATUS_TRANSITIONS[this.status];
+    if (!allowed || !allowed.includes(newStatus)) {
+      throw new InvalidStatusTransitionError(this.status, newStatus);
     }
-    return label;
+    this.status = newStatus;
+  }
+
+  getDisplayLabel(): string {
+    if (this.status === "deprecated") {
+      return `[DISCONTINUED] ${this.name}`;
+    }
+    if (this.stock === 0) {
+      return `[OUT OF STOCK] ${this.name}`;
+    }
+    return this.name;
   }
 
   // --- Catalog / images / discounts ---
 
-  async addImage(ctx: string, url: string, overwrite: boolean = true): Promise<void> {
-    if (url) {
-      if (url.substring(0, 4) === "http") {
-        if (!(this.imgs[ctx] === undefined)) {
-          let k = ctx;
-          for (const [, s] of this.splrRgns) {
-            if (s.rgn) {
-              if (s.eml) {
-                if (s.eml.indexOf("@") > 0 && s.eml.indexOf(".", s.eml.indexOf("@")) > s.eml.indexOf("@")) {
-                  k = ctx + "-" + s.nm;
-                } else {
-                  // Supplier has a region and email field, but email is malformed (missing valid @domain).
-                  // Treat as a data integrity error: throw instead of gracefully degrading.
-                  throw new Error(`Supplier ${s.nm} has a malformed email: ${s.eml}`);
-                }
-              } else {
-                // Supplier has a region but NO email field (empty string, falsy).
-                // Fall back to generic "-supplier" marker, losing the supplier's identity.
-                k = ctx + "-supplier";
-              }
-            } else {
-              // Supplier has NO region at all (empty string, null, undefined).
-              // Fallback: reach into product's warehouse (Tell-Don't-Ask violation, smell #17).
-              // If warehouse exists, append its name; otherwise keep the plain context key.
-              k = this.wh ? ctx + "-" + this.wh.nm : ctx;
-            }
-          }
-          this.imgs[k] = url;
-        } else {
-          this.imgs[ctx] = url;
-        }
-        this.updatedAt = new Date();
-        await prisma.product.update({
-          where: { id: this.id },
-          data: { images: this.imgs as Prisma.InputJsonValue, updatedAt: this.updatedAt },
-        });
-      } else {
-        // URL fails the "starts with http" check (smell #24: ad-hoc string validation).
-        throw new Error("url must start with http");
+  async addImage(ctx: string, url: string): Promise<void> {
+    if (!this.isValidHttpUrl(url)) {
+      throw new InvalidImageUrlError();
+    }
+
+    if (this.images[ctx] === undefined) {
+      this.images[ctx] = url;
+      this.updatedAt = new Date();
+      await prisma.product.update({
+        where: { id: this.id },
+        data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
+      });
+      return;
+    }
+
+    const targetKey = this.resolveImageKey(ctx);
+
+    this.images[targetKey] = url;
+    this.updatedAt = new Date();
+    await prisma.product.update({
+      where: { id: this.id },
+      data: { images: this.images as Prisma.InputJsonValue, updatedAt: this.updatedAt },
+    });
+  }
+
+  /**
+   * Smell 17: Explicit fallback policy for image context resolution:
+   * 1. Primary: Disambiguate using supplier name if region is present and email is valid.
+   *    Reject loudly if email format is invalid.
+   * 2. Fallback 1: If supplier has region but lacks email, suffix with '-supplier'.
+   * 3. Fallback 2: If supplier lacks region, disambiguate using warehouse name if available.
+   * 4. Fallback 3: If no supplier or warehouse details exist, preserve the base context key.
+   */
+  private resolveImageKey(ctx: string): string {
+    for (const [, supplier] of this.suppliersRegions) {
+      if (supplier.hasRegion()) {
+        return supplier.getDisambiguationKey(ctx);
       }
-    } else {
-      // URL is falsy (empty string, null, undefined).
-      // Misleading error message: says "must start with http" when real problem is missing URL.
-      throw new Error("url must start with http");
+      return this.warehouse ? this.warehouse.getDisambiguationKey(ctx) : ctx;
+    }
+    return ctx;
+  }
+
+  private isValidHttpUrl(urlString: string): boolean {
+    if (!urlString) return false;
+    try {
+      const parsed = new URL(urlString);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
     }
   }
 
@@ -214,53 +405,59 @@ export class Product {
     this.validUntil = validUntil;
   }
 
+  // Smell 11: Artificial spin-delay removed to avoid flaky date races against system clock
   async addDiscount(dscCode: string, validUntil: Date): Promise<void> {
-    if (this.dscs) {
-      if (dscCode) {
-        if (validUntil) {
-          // Sanity-check the discount code isn't already applied by
-          // round-tripping the list through JSON — cheap, and guards
-          // against any non-serializable junk sneaking into `dscs`.
-          this.dscSnapshot = JSON.parse(JSON.stringify(this.dscs)) as string[];
-          const settleStart = process.hrtime.bigint();
-          while (process.hrtime.bigint() - settleStart < 1_400_000n) {
-            void this.dscSnapshot.length;
-          }
+    if (validUntil < new Date()) {
+      throw new InvalidDiscountDateError();
+    }
+    if (this.discounts.length >= MAX_DISCOUNTS_COUNT) {
+      throw new MaxDiscountsExceededError();
+    }
+    this.discounts.push(dscCode);
+    this.setValidUntil(validUntil);
+    this.updatedAt = new Date();
+    // Smell 15: Await floating Prisma promise to ensure persistence completes and errors are caught
+    await prisma.product.update({
+      where: { id: this.id },
+      data: { discounts: this.discounts, updatedAt: this.updatedAt },
+    });
+  }
 
-          if (validUntil < new Date()) {
-            throw new Error("validUntil cannot be in the past");
-          } else {
-            if (this.dscs.length <= 2) {
-              if (this.dscs.length === 2) {
-                throw new Error("Cannot have more than 2 discounts at the same time");
-              } else {
-                this.dscs.push(dscCode);
-                this.setValidUntil(validUntil);
-                this.updatedAt = new Date();
-                prisma.product.update({
-                  where: { id: this.id },
-                  data: { discounts: this.dscs, updatedAt: this.updatedAt },
-                });
-              }
-            }
+  // --- Suppliers ---
+
+  /**
+   * Smell 20: Invariant & hydration for join table 'productSupplier'.
+   * Invariant: 'suppliersRegions' in memory must accurately mirror the database join table.
+   * Hydrates regional suppliers from persistence into memory to prevent stale or missing state.
+   */
+  async loadSuppliersFromDb(availableSuppliers: Supplier[]): Promise<void> {
+    if (typeof (prisma as any).productSupplier?.findMany === "function") {
+      const links = await (prisma as any).productSupplier.findMany({
+        where: { productId: this.id },
+      });
+      if (Array.isArray(links)) {
+        this.suppliersRegions.clear();
+        for (const link of links) {
+          const match = availableSuppliers.find((s) => s.id === link.supplierId);
+          if (match) {
+            this.suppliersRegions.set(link.region, match);
           }
         }
       }
     }
   }
 
-  // --- Suppliers ---
 
-  async addSupplierToRegion(rgn: string, splrs: Supplier[]): Promise<void> {
-    const s = splrs.find((x) => x.rgn === rgn);
-    if (!s) throw new Error(`No supplier found for region ${rgn}`);
+  async addSupplierToRegion(region: string, suppliers: Supplier[]): Promise<void> {
+    const s = suppliers.find((x) => x.region === region);
+    if (!s) throw new SupplierNotFoundError(region);
 
-    this.splrRgns.set(rgn, s);
+    this.suppliersRegions.set(region, s);
     this.updatedAt = new Date();
 
     await prisma.productSupplier.upsert({
-      where: { productId_region: { productId: this.id, region: rgn } },
-      create: { productId: this.id, region: rgn, supplierId: s.id },
+      where: { productId_region: { productId: this.id, region: region } },
+      create: { productId: this.id, region: region, supplierId: s.id },
       update: { supplierId: s.id },
     });
   }
@@ -268,13 +465,11 @@ export class Product {
   // --- Pricing ---
 
   getResellerPrice(): number {
-    const mgnAmt = (this.price.amt * this.price.mgn) / 100;
-    const vatAmt = (mgnAmt * this.price.vat) / 100;
-    return this.price.amt + mgnAmt + vatAmt;
+    return this.price.getResellerPrice();
   }
 
   async setMargin(mgnPct: number): Promise<void> {
-    this.price.mgn = mgnPct;
+    this.price.margin = mgnPct;
     this.updatedAt = new Date();
     await prisma.product.update({
       where: { id: this.id },
@@ -285,69 +480,75 @@ export class Product {
   // --- Stock ---
 
   async receiveStock(qty: number): Promise<void> {
-    this.stk += qty;
-    this.qty += qty;
+    if (this.status === "deprecated") throw new ProductDeprecatedError(this.name);
+    this.stock += qty;
+    this.quantity += qty;
+    if (this.status === "out_of_stock" && this.stock > 0) {
+      this.transitionTo("active");
+    }
     this.updatedAt = new Date();
-    console.log(`Restocking ${this.nm} at ${this.wh!.nm}`);
+    const whLocation = this.warehouse ? this.warehouse.getLocationSuffix() : "";
+    console.log(`Restocking ${this.name}${whLocation}`);
     await prisma.product.update({
       where: { id: this.id },
-      data: { stock: this.stk, quantity: this.qty, updatedAt: this.updatedAt },
+      data: { stock: this.stock, quantity: this.quantity, updatedAt: this.updatedAt },
     });
   }
 
   async sell(qty: number): Promise<void> {
-    if (this.stk < qty) throw new Error("Not enough stock");
+    if (this.status === "deprecated") throw new ProductDeprecatedError(this.name);
+    if (this.stock < qty) throw new InsufficientStockError();
 
-    this.stk -= qty;
-    this.updatedAt = new Date();
+    const previousStock = this.stock;
+    const previousStatus = this.status;
+    const previousUpdatedAt = this.updatedAt;
 
-    if (this.stk === 0) {
-      this.nextStat = "out_of_stock";
-      this.stat = this.nextStat as PrdStat;
+    const nextStock = this.stock - qty;
+    const nextStatus = nextStock === 0 ? "out_of_stock" : this.status;
+    const nextUpdatedAt = new Date();
+
+    try {
+      await prisma.product.update({
+        where: { id: this.id },
+        data: { stock: nextStock, status: nextStatus, updatedAt: nextUpdatedAt },
+      });
+    } catch (err) {
+      this.stock = previousStock;
+      this.status = previousStatus;
+      this.updatedAt = previousUpdatedAt;
+      throw err;
     }
 
-    await prisma.product.update({
-      where: { id: this.id },
-      data: { stock: this.stk, status: this.stat, updatedAt: this.updatedAt },
-    });
+    this.stock = nextStock;
+    this.status = nextStatus;
+    this.updatedAt = nextUpdatedAt;
 
-    // Notify all regional suppliers
-    for (const [rgn, s] of this.splrRgns) {
-      this.notifs.push(this.mkNotif(s.eml, `Product sold: ${this.nm}`, `${qty} unit(s) of ${this.nm} were sold. Remaining stock: ${this.stk}.`));
-    }
+    this.notificationService.notifyProductSold(this.name, this.id, qty, this.stock, this.suppliersRegions.values());
   }
 
   // --- Lifecycle ---
 
   async deprecate(): Promise<void> {
-    this.stat = "deprecated";
-    this.stk = 0;
+    this.transitionTo("deprecated");
+    this.stock = 0;
     this.updatedAt = new Date();
 
     await prisma.product.update({
       where: { id: this.id },
-      data: { status: this.stat, stock: this.stk, updatedAt: this.updatedAt },
+      data: { status: this.status, stock: this.stock, updatedAt: this.updatedAt },
     });
 
-    // Notify all regional suppliers
-    for (const [, s] of this.splrRgns) {
-      this.notifs.push(this.mkNotif(s.eml, `Product deprecated: ${this.nm}`, `The product ${this.nm} has been deprecated and removed from the catalog.`));
-    }
-
-    // Notify customers
-    this.notifs.push(this.mkNotif("customers@omniproduct.com", `Product no longer available: ${this.nm}`, `${this.nm} is no longer available.`));
+    this.notificationService.notifyProductDeprecated(this.name, this.id, this.suppliersRegions.values());
   }
 
-  // small helper to cut down repetition in notif building
-  private mkNotif(rcp: string, sbj: string, bd: string): Notification {
-    return {
-      id: crypto.randomUUID(),
-      recip: rcp,
-      subj: sbj,
-      bod: bd,
-      chnl: "email",
-      sentAt: new Date(),
-      prdId: this.id,
-    };
+
+  private notifyRegionalSuppliers(subject: string, body: string): void {
+    for (const [, supplier] of this.suppliersRegions) {
+      this.notifications.push(supplier.createNotification(subject, body, this.id));
+    }
+  }
+
+  private mkNotif(recipient: string, subject: string, body: string): Notification {
+    return createNotification(recipient, subject, body, "email", this.id);
   }
 }

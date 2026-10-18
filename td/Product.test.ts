@@ -26,7 +26,7 @@ vi.mock("@prisma/client", () => ({
   Prisma: {},
 }));
 
-import { Product, Price, Supplier, Warehouse } from "./Product";
+import { Product, Price, Supplier, Warehouse, NotificationService, prisma } from "./Product";
 
 function hasProp(obj: unknown, propName: string): boolean {
   return typeof obj === "object" && obj !== null && propName in (obj as object);
@@ -447,6 +447,17 @@ describe("addImage()", () => {
       "Supplier Acme Corp has a malformed email: not-an-email",
     );
   });
+
+  it("uses the first registered supplier key when multiple suppliers exist", async () => {
+    const product = makeTypedProduct();
+    product.splrRgns.set("EU", new Supplier("s1", "Acme Corp", "acme@example.com", "EU"));
+    product.splrRgns.set("US", new Supplier("s2", "Beta LLC", "beta@example.com", "US"));
+    await product.addImage("hero", "http://img/hero-v1.png");
+
+    await product.addImage("hero", "http://img/hero-v2.png");
+
+    expect(product.imgs["hero-Acme Corp"]).toBe("http://img/hero-v2.png");
+  });
 });
 
 describe("addSupplierToRegion()", () => {
@@ -466,5 +477,59 @@ describe("addSupplierToRegion()", () => {
     await expect(product.addSupplierToRegion("APAC", [supplier])).rejects.toThrow(
       "No supplier found for region APAC",
     );
+  });
+});
+
+describe("status transitions (Smell 21)", () => {
+  it("throws when trying to sell a deprecated product", async () => {
+    const product = makeTypedProduct();
+    await product.deprecate();
+
+    await expect(product.sell(1)).rejects.toThrow("Cannot operate on deprecated product");
+  });
+
+  it("throws when trying to transition from deprecated back to active", () => {
+    const product = makeTypedProduct();
+    product.status = "deprecated";
+
+    expect(() => product.transitionTo("active")).toThrow(
+      "Cannot transition product status from deprecated to active",
+    );
+  });
+});
+
+describe("rollback on persistence failure (Smell 22)", () => {
+  it("rolls back in-memory state when persistence throws during sell()", async () => {
+    const product = makeTypedProduct();
+    vi.spyOn(prisma.product, "update").mockRejectedValueOnce(new Error("DB Connection Error"));
+
+    await expect(product.sell(10)).rejects.toThrow("DB Connection Error");
+    expect(product.stock).toBe(100);
+  });
+});
+
+describe("notification lifecycle (Smell 23)", () => {
+  it("flushes and empties accumulated notifications to prevent memory leaks", async () => {
+    const product = makeTypedProduct();
+    product.splrRgns.set("EU", new Supplier("s1", "Acme Corp", "acme@example.com", "EU"));
+    await product.sell(1);
+
+    expect(product.notifications.length).toBe(1);
+    const flushed = product.flushNotifications();
+    expect(flushed.length).toBe(1);
+    expect(product.notifications.length).toBe(0);
+  });
+});
+
+describe("NotificationService (Smell 24)", () => {
+  it("creates notifications without needing a Product instance", () => {
+    const service = new NotificationService();
+    const supplier = new Supplier("s1", "Acme Corp", "acme@example.com", "EU");
+
+    service.notifyProductSold("Widget", "p1", 2, 8, [supplier]);
+
+    expect(service.notifications.length).toBe(1);
+    expect(service.notifications[0].recipient).toBe("acme@example.com");
+    expect(service.notifications[0].subject).toBe("Product sold: Widget");
   });
 });
